@@ -1,6 +1,5 @@
 from discord import (
     Client,
-    TextChannel,
     Message,
     Embed,
     AllowedMentions,
@@ -12,17 +11,17 @@ from discord.ext.commands import Bot, Context as DContext
 from discord.http import Route
 from discord.abc import Messageable
 
-from functools import wraps
+from inspect import iscoroutinefunction
+
 from aiohttp import FormData
-from asyncio import TimeoutError
-from typing import List, Callable, Awaitable, Union
+from typing import List, Union
 from json import dumps
 
 from .button import Button
 from .select import Select
 from .component import Component
 from .message import ComponentMessage
-from .interaction import Interaction, InteractionEventType
+from .interaction import Interaction, InteractionEventType, ButtonEvent
 
 
 __all__ = ("DiscordComponents",)
@@ -53,14 +52,23 @@ class DiscordComponents:
         async def reply_component_msg_prop(msg, *args, **kwargs):
             return await self.send_component_msg(msg.channel, *args, **kwargs, reference=msg)
 
+        self.bot._button_events = {}
+
         async def on_socket_response(res):
             if (res["t"] != "INTERACTION_CREATE") or (res["d"]["type"] != 3):
                 return
 
-            ctx = self._get_interaction(res)
+            ctx = self._get_button_event(res)
             for key, value in InteractionEventType.items():
                 if value == res["d"]["data"]["component_type"]:
-                    self.bot.dispatch(key, ctx)
+                    func = self.bot._button_events.get(int(res['d']['message']['id']), {}).get(res['d']['data']['custom_id'])
+                    if func:
+                        if iscoroutinefunction(func):
+                            await func(ctx)
+                        else:
+                            func(ctx)
+                    else:
+                        self.bot.dispatch(key, ctx)
                     break
 
         if isinstance(self.bot, Bot) and add_listener:
@@ -164,6 +172,8 @@ class DiscordComponents:
             )
 
         msg = ComponentMessage(components=components, state=state, channel=channel, data=data)
+        if hasattr(self.bot, '_button_events'):
+            self.bot._button_events[msg.id] = msg._get_button_events()
         if delete_after is not None:
             self.bot.loop.create_task(msg.delete(delay=delete_after))
         return msg
@@ -247,12 +257,13 @@ class DiscordComponents:
             data["message"] = None
             data["user"] = None
         else:
-            for line in raw_data["message"]["components"]:
+            for i, line in enumerate(raw_data["message"]["components"]):
+                components.append([])
                 if line["type"] >= 2:
-                    components.append(self._get_component_type(line["type"]).from_json(line))
+                    components[i].append(self._get_component_type(line["type"]).from_json(line))
                 for component in line["components"]:
                     if component["type"] >= 2:
-                        components.append(
+                        components[i].append(
                             self._get_component_type(component["type"]).from_json(component)
                         )
 
@@ -272,27 +283,47 @@ class DiscordComponents:
         data["component"] = raw_data["data"]
         return data
 
-    def _get_interaction(self, json: dict):
+    def __make_interaction(self, json: dict):
         data = self._structured_raw_data(json)
         rescomponent = []
 
         if data["message"]:
-            for component in data["message"].components:
-                if isinstance(component, Select):
-                    for option in component.options:
-                        if option.value in data["values"]:
-                            if len(data["values"]) > 1:
-                                rescomponent.append(option)
-                            else:
-                                rescomponent = [option]
-                                break
-                else:
-                    if component.id == data["component"]["custom_id"]:
-                        rescomponent = component
+            for line in data["message"].components:
+                for component in line:
+                    if isinstance(component, Select):
+                        for option in component.options:
+                            if option.value in data["values"]:
+                                if len(data["values"]) > 1:
+                                    rescomponent.append(option)
+                                else:
+                                    rescomponent = [option]
+                                    break
+                    else:
+                        if component.id == data["component"]["custom_id"]:
+                            rescomponent = component
         else:
             rescomponent = data["component"]
 
+        return rescomponent, data
+
+    def _get_interaction(self, json: dict):
+        rescomponent, data = self.__make_interaction(json)
+
         ctx = Interaction(
+            bot=self.bot,
+            client=self,
+            user=data["user"],
+            component=rescomponent,
+            raw_data=data["raw"],
+            message=data["message"],
+            is_ephemeral=not bool(data["message"]),
+        )
+        return ctx
+
+    def _get_button_event(self, json: dict):
+        rescomponent, data = self.__make_interaction(json)
+
+        ctx = ButtonEvent(
             bot=self.bot,
             client=self,
             user=data["user"],

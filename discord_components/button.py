@@ -1,6 +1,6 @@
 from discord import InvalidArgument, PartialEmoji, Emoji
 
-from typing import Optional, Union
+from typing import Optional, Union, Callable
 from uuid import uuid1
 from random import randint
 
@@ -34,11 +34,12 @@ class ButtonStyle:
 
 
 class Button(Component):
-    __slots__ = ("_style", "_label", "_id", "_url", "_disabled", "_emoji")
+    __slots__ = ("_style", "_label", "_id", "_url", "_disabled", "_emoji", "_event")
 
     def __init__(
         self,
         *,
+        on_press: Callable = None,
         label: str = None,
         style: int = ButtonStyle.gray,
         id: str = None,
@@ -55,6 +56,8 @@ class Button(Component):
 
         if not label and not emoji:
             raise InvalidArgument(f"Label or emoji must be given.")
+
+        self._event = on_press
 
         self._style = style
         self._label = label
@@ -111,6 +114,10 @@ class Button(Component):
     @property
     def emoji(self) -> PartialEmoji:
         return self._emoji
+
+    @property
+    def event(self) -> Callable:
+        return self._event
 
     @style.setter
     def style(self, value: int):

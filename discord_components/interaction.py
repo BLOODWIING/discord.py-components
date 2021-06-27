@@ -3,7 +3,7 @@ from discord.ext.commands import Bot
 from discord.http import Route
 
 from aiohttp import FormData
-from typing import List, Union
+from typing import List, Union, Iterable
 from json import dumps
 
 from .button import Button
@@ -11,7 +11,7 @@ from .message import ComponentMessage
 from .component import Component
 
 
-__all__ = ("Interaction", "InteractionType", "InteractionEventType", "FlagsType")
+__all__ = ("Interaction", "InteractionType", "InteractionEventType", "FlagsType", "ButtonEvent")
 
 
 InteractionEventType = {"button_click": 2, "select_option": 3}
@@ -44,7 +44,7 @@ class Interaction:
         user: User = None,
         component: Component,
         raw_data: dict,
-        message: Message = None,
+        message: ComponentMessage = None,
         is_ephemeral: bool = False,
     ):
         self.bot = bot
@@ -115,3 +115,30 @@ class Interaction:
             Route("POST", f"/interactions/{self.interaction_id}/{self.interaction_token}/callback"),
             json={"type": type, "data": data},
         )
+
+
+class ButtonEvent(Interaction):
+    async def finish(self, *, auto_disable=False, auto_clear=False):
+        if hasattr(self.bot, '_button_events') and self.message.id in self.bot._button_events:
+            self.bot._button_events.pop(self.message.id)
+
+            if auto_clear:
+                await self.client.edit_component_msg(
+                    self.message,
+                    self.message.content,
+                    components=[]
+                )
+
+            elif auto_disable:
+                for c in self.message.components:
+                    if isinstance(c, Iterable):
+                        for cc in c:
+                            if isinstance(cc, Button):
+                                cc.disabled = True
+                    if isinstance(c, Button):
+                        c.disabled = True
+                await self.client.edit_component_msg(
+                    self.message,
+                    self.message.content,
+                    components=self.message.components
+                )
