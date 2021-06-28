@@ -13,18 +13,26 @@ from discord.abc import Messageable
 
 from inspect import iscoroutinefunction
 
+from asyncio import sleep
 from aiohttp import FormData
-from typing import List, Union
+from typing import List, Union, Callable
 from json import dumps
 
 from .button import Button
 from .select import Select
 from .component import Component
 from .message import ComponentMessage
-from .interaction import Interaction, InteractionEventType, ButtonEvent
+from .interaction import Interaction, InteractionEventType, ButtonEvent, TimeoutEvent
 
 
 __all__ = ("DiscordComponents",)
+
+
+async def run_func(func: Callable, *args, **kwargs):
+    if iscoroutinefunction(func):
+        await func(*args, **kwargs)
+    else:
+        func(*args, **kwargs)
 
 
 class DiscordComponents:
@@ -61,14 +69,14 @@ class DiscordComponents:
             ctx = self._get_button_event(res)
             for key, value in InteractionEventType.items():
                 if value == res["d"]["data"]["component_type"]:
-                    func = self.bot._button_events.get(int(res['d']['message']['id']), {}).get(res['d']['data']['custom_id'])
-                    if func:
-                        if iscoroutinefunction(func):
-                            await func(ctx)
+                    event = self.bot._button_events.get(int(res['d']['message']['id']), None)
+                    if event is not None:
+                        func = event.get('func', {}).get(res['d']['data']['custom_id'], None)
+                        self.__restart_timeout(int(res['d']['message']['id']))
+                        if func is not None:
+                            await run_func(func, ctx)
                         else:
-                            func(ctx)
-                    else:
-                        self.bot.dispatch(key, ctx)
+                            self.bot.dispatch(key, ctx)
                     break
 
         if isinstance(self.bot, Bot) and add_listener:
@@ -79,6 +87,54 @@ class DiscordComponents:
         Messageable.send = send_component_msg_prop
         Message.edit = edit_component_msg_prop
         Message.reply = reply_component_msg_prop
+
+    async def __timeout(self, message_id: int, timeout: float):
+        await sleep(timeout)
+        event = self.bot._button_events.pop(message_id, None)
+        if event is None:
+            return
+        if 'timeout' in event and event['timeout'] is not None:
+            await run_func(event['timeout'], TimeoutEvent(self, event['message']))
+
+    def update_timeout(self, message: Message, timeout: float):
+        if message.id not in self.bot._button_events:
+            return
+        timer = self.bot._button_events[message.id].get('timer', None)
+        if timer is not None:
+            timer.cancel()
+        timer = self.bot.loop.create_task(self.__timeout(message.id, timeout))
+        self.bot._button_events[message.id]['timer'] = timer
+        self.bot._button_events[message.id]['reset'] = timeout
+
+    def __restart_timeout(self, message_id: int):
+        if message_id not in self.bot._button_events:
+            return
+        timer = self.bot._button_events[message_id].get('timer', None)
+        if timer is not None:
+            timer.cancel()
+        timer = self.bot.loop.create_task(self.__timeout(message_id, self.bot._button_events[message_id]['reset']))
+        self.bot._button_events[message_id]['timer'] = timer
+
+    def restart_timeout(self, message: Message):
+        self.__restart_timeout(message.id)
+
+    def _update_button_events(self, msg: Message, timeout: Union[float, int], on_timeout: Callable):
+        if hasattr(self.bot, '_button_events'):
+
+            if not isinstance(timeout, (float, int)):
+                raise ValueError('timeout must be a float or integer')
+
+            if not isinstance(on_timeout, Callable):
+                raise ValueError('on_timeout must be a function')
+
+            funcs = msg._get_button_events()
+
+            if len(funcs.keys()) > 0:
+                self.bot._button_events[msg.id] = {'func': funcs, 'timeout': on_timeout, 'message': msg}
+                self.bot._button_events[msg.id]['reset'] = timeout
+
+                if timeout is not None:
+                    self.restart_timeout(msg)
 
     async def send_component_msg(
         self,
@@ -94,6 +150,8 @@ class DiscordComponents:
         reference: Message = None,
         components: List[Union[Component, List[Component]]] = None,
         delete_after: float = None,
+        timeout: Union[float, int] = None,
+        on_timeout: Callable = None,
         **options,
     ) -> Message:
         state = self.bot._get_state()
@@ -172,8 +230,7 @@ class DiscordComponents:
             )
 
         msg = ComponentMessage(components=components, state=state, channel=channel, data=data)
-        if hasattr(self.bot, '_button_events'):
-            self.bot._button_events[msg.id] = msg._get_button_events()
+        self._update_button_events(msg, timeout, on_timeout)
         if delete_after is not None:
             self.bot.loop.create_task(msg.delete(delay=delete_after))
         return msg
@@ -186,6 +243,8 @@ class DiscordComponents:
         embed: Embed = None,
         allowed_mentions: AllowedMentions = None,
         components: List[Union[Component, List[Component]]] = None,
+        timeout: Union[float, int] = None,
+        on_timeout: Callable = None,
         **options,
     ):
         state = self.bot._get_state()
@@ -206,9 +265,11 @@ class DiscordComponents:
 
             data["allowed_mentions"] = allowed_mentions
 
-        await self.bot.http.request(
+        data = await self.bot.http.request(
             Route("PATCH", f"/channels/{message.channel.id}/messages/{message.id}"), json=data
         )
+        msg = ComponentMessage(components=components, state=state, channel=message.channel, data=data)
+        self._update_button_events(msg, timeout, on_timeout)
 
     def _get_components_json(
         self, components: List[Union[Component, List[Component]]] = None

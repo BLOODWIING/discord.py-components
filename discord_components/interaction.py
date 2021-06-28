@@ -11,7 +11,7 @@ from .message import ComponentMessage
 from .component import Component
 
 
-__all__ = ("Interaction", "InteractionType", "InteractionEventType", "FlagsType", "ButtonEvent")
+__all__ = ("Interaction", "InteractionType", "InteractionEventType", "FlagsType", "ButtonEvent", "TimeoutEvent")
 
 
 InteractionEventType = {"button_click": 2, "select_option": 3}
@@ -123,22 +123,46 @@ class ButtonEvent(Interaction):
             self.bot._button_events.pop(self.message.id)
 
             if auto_clear:
-                await self.client.edit_component_msg(
-                    self.message,
-                    self.message.content,
-                    components=[]
-                )
+                await ButtonEvent.clear_buttons(self.client, self.message)
 
             elif auto_disable:
-                for c in self.message.components:
-                    if isinstance(c, Iterable):
-                        for cc in c:
-                            if isinstance(cc, Button):
-                                cc.disabled = True
-                    if isinstance(c, Button):
-                        c.disabled = True
-                await self.client.edit_component_msg(
-                    self.message,
-                    self.message.content,
-                    components=self.message.components
-                )
+                await ButtonEvent.disable_buttons(self.client, self.message)
+
+    def update_timeout(self, timeout: float):
+        self.bot._button_events[self.message.id]['reset'] = timeout
+        self.client.restart_timeout(self.message)
+
+    @staticmethod
+    async def clear_buttons(client: "DiscordComponents", message: Message):
+        await client.edit_component_msg(
+            message,
+            message.content,
+            components=[]
+        )
+
+    @staticmethod
+    async def disable_buttons(client: "DiscordComponents", message: Message):
+        for c in message.components:
+            if isinstance(c, Iterable):
+                for cc in c:
+                    if isinstance(cc, Button):
+                        cc.disabled = True
+            if isinstance(c, Button):
+                c.disabled = True
+        await client.edit_component_msg(
+            message,
+            message.content,
+            components=message.components
+        )
+
+
+class TimeoutEvent:
+    def __init__(self, client: "DiscordComponents", message: Message):
+        self.client = client
+        self.message = message
+
+    async def clear_buttons(self):
+        await ButtonEvent.clear_buttons(self.client, self.message)
+
+    async def disable_buttons(self):
+        await ButtonEvent.disable_buttons(self.client, self.message)
