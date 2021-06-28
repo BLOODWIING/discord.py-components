@@ -122,7 +122,7 @@ class DiscordComponents:
 
     def _update_button_events(self, msg: ComponentMessage, timeout: Union[float, int], on_timeout: Callable):
         if hasattr(self.bot, '_button_events'):
-            if msg.components is None or len(sum(msg.components, [])) == 0
+            if msg.components is None or len(sum(msg.components, [])) == 0:
                 return
 
             if not isinstance(timeout, (float, int, type(None))):
