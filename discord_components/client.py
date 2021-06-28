@@ -118,13 +118,15 @@ class DiscordComponents:
     def restart_timeout(self, message: Message):
         self.__restart_timeout(message.id)
 
-    def _update_button_events(self, msg: Message, timeout: Union[float, int], on_timeout: Callable):
+    def _update_button_events(self, msg: ComponentMessage, timeout: Union[float, int], on_timeout: Callable):
         if hasattr(self.bot, '_button_events'):
+            if msg.components is None or len(sum(msg.components, [])) == 0
+                return
 
-            if not isinstance(timeout, (float, int)):
+            if not isinstance(timeout, (float, int, type(None))):
                 raise ValueError('timeout must be a float or integer')
 
-            if not isinstance(on_timeout, Callable):
+            if not isinstance(on_timeout, (Callable, type(None))):
                 raise ValueError('on_timeout must be a function')
 
             funcs = msg._get_button_events()
