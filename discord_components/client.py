@@ -88,7 +88,9 @@ class DiscordComponents:
         Message.edit = edit_component_msg_prop
         Message.reply = reply_component_msg_prop
 
-    async def __timeout(self, message_id: int, timeout: float):
+    async def __timeout(self, message_id: int, timeout: Union[float, int]):
+        if timeout is None:
+            return
         await sleep(timeout)
         event = self.bot._button_events.pop(message_id, None)
         if event is None:
@@ -96,7 +98,7 @@ class DiscordComponents:
         if 'timeout' in event and event['timeout'] is not None:
             await run_func(event['timeout'], TimeoutEvent(self, event['message']))
 
-    def update_timeout(self, message: Message, timeout: float):
+    def update_timeout(self, message: Message, timeout: Union[float, int]):
         if message.id not in self.bot._button_events:
             return
         timer = self.bot._button_events[message.id].get('timer', None)
