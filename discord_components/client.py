@@ -77,6 +77,8 @@ class DiscordComponents:
                             await run_func(func, ctx)
                         else:
                             self.bot.dispatch(key, ctx)
+                    else:
+                        self.bot.dispatch(key, ctx)
                     break
 
         if isinstance(self.bot, Bot) and add_listener:
@@ -123,8 +125,9 @@ class DiscordComponents:
         timer = self.bot._button_events[message_id].get('timer', None)
         if timer is not None:
             timer.cancel()
-        timer = self.bot.loop.create_task(self.__timeout(message_id, self.bot._button_events[message_id]['reset']))
-        self.bot._button_events[message_id]['timer'] = timer
+        if 'reset' in self.bot._button_events[message_id] and self.bot._button_events[message_id]['reset'] is not None:
+            timer = self.bot.loop.create_task(self.__timeout(message_id, self.bot._button_events[message_id]['reset']))
+            self.bot._button_events[message_id]['timer'] = timer
 
     def restart_timeout(self, message: Message):
         self.__restart_timeout(message.id)
@@ -144,10 +147,9 @@ class DiscordComponents:
 
             if len(funcs.keys()) > 0:
                 self.bot._button_events[msg.id] = {'func': funcs, 'timeout': on_timeout, 'message': msg}
-                self.bot._button_events[msg.id]['reset'] = timeout
-
                 if timeout is not None:
-                    self.restart_timeout(msg)
+                    self.bot._button_events[msg.id]['reset'] = timeout
+                self.restart_timeout(msg)
 
     async def send_component_msg(
         self,
