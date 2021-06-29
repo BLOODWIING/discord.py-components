@@ -90,22 +90,26 @@ class DiscordComponents:
         Message.edit = edit_component_msg_prop
         Message.reply = reply_component_msg_prop
 
+    async def __pop_timeout(self, message_id: int):
+        self.bot._button_events.pop(message_id, None)
+
     async def __timeout(self, message_id: int, timeout: Union[float, int]):
         if timeout is None:
             return
         await sleep(timeout)
-        event = self.bot._button_events.pop(message_id, None)
+        event = self.bot._button_events.get(message_id, None)
         if event is None:
             return
         if 'timeout' in event and event['timeout'] is not None:
             await run_func(event['timeout'], TimeoutEvent(self, event['message']))
         else:
             await ButtonEvent.disable_buttons(self, event['message'])
+        await self.__pop_timeout(message_id)
 
     def remove_timeout(self, message: Message):
         if message.id not in self.bot._button_events:
             return
-        timer = self.bot._button_events.pop(message.id).get('timer', None)
+        timer = self.bot._button_events.pop(message.id, {}).get('timer', None)
         if timer is not None:
             timer.cancel()
 

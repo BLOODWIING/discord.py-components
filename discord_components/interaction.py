@@ -136,7 +136,7 @@ class ButtonEvent(Interaction):
     async def clear_buttons(client: "DiscordComponents", message: Message):
         await client.edit_component_msg(
             message,
-            message.content,
+            None,
             components=[]
         )
 
@@ -151,7 +151,7 @@ class ButtonEvent(Interaction):
                 c.disabled = True
         await client.edit_component_msg(
             message,
-            message.content,
+            None,
             components=message.components
         )
 
