@@ -15,7 +15,7 @@ from inspect import iscoroutinefunction
 
 from asyncio import sleep
 from aiohttp import FormData
-from typing import List, Union, Callable
+from typing import List, Union, Callable, Optional
 from json import dumps
 
 from .button import Button
@@ -72,7 +72,8 @@ class DiscordComponents:
                     event = self.bot._button_events.get(int(res['d']['message']['id']), None)
                     if event is not None:
                         func = event.get('func', {}).get(res['d']['data']['custom_id'], None)
-                        self.__restart_timeout(int(res['d']['message']['id']))
+                        if event.get('auto', True):
+                            self.__restart_timeout(int(res['d']['message']['id']))
                         if func is not None:
                             await run_func(func, ctx)
                         else:
@@ -136,7 +137,13 @@ class DiscordComponents:
     def restart_timeout(self, message: Message):
         self.__restart_timeout(message.id)
 
-    def _update_button_events(self, msg: ComponentMessage, timeout: Union[float, int], on_timeout: Callable):
+    def _update_button_events(
+            self,
+            msg: ComponentMessage,
+            timeout: Union[float, int],
+            on_timeout: Callable,
+            auto_restart: Optional[bool]
+    ):
         if hasattr(self.bot, '_button_events'):
             if msg.components is None or len(sum(msg.components, [])) == 0:
                 return
@@ -150,7 +157,13 @@ class DiscordComponents:
             funcs = msg._get_button_events()
 
             if len(funcs.keys()) > 0:
-                self.bot._button_events[msg.id] = {'func': funcs, 'timeout': on_timeout, 'message': msg}
+                prev = self.bot._button_events.get(msg.id, {}).get('auto', True)
+                self.bot._button_events[msg.id] = {
+                    'func': funcs,
+                    'timeout': on_timeout,
+                    'message': msg,
+                    'auto': auto_restart if auto_restart is not None else prev
+                }
                 if timeout is not None:
                     self.bot._button_events[msg.id]['reset'] = timeout
                 self.restart_timeout(msg)
@@ -170,6 +183,7 @@ class DiscordComponents:
         components: List[Union[Component, List[Component]]] = None,
         delete_after: float = None,
         timeout: Union[float, int] = None,
+        auto_restart: bool = True,
         on_timeout: Callable = None,
         **options,
     ) -> Message:
@@ -249,7 +263,7 @@ class DiscordComponents:
             )
 
         msg = ComponentMessage(components=components, state=state, channel=channel, data=data)
-        self._update_button_events(msg, timeout, on_timeout)
+        self._update_button_events(msg, timeout, on_timeout, auto_restart)
         if delete_after is not None:
             self.bot.loop.create_task(msg.delete(delay=delete_after))
         return msg
@@ -263,6 +277,7 @@ class DiscordComponents:
         allowed_mentions: AllowedMentions = None,
         components: List[Union[Component, List[Component]]] = None,
         timeout: Union[float, int] = None,
+        auto_restart: bool = None,
         on_timeout: Callable = None,
         **options,
     ):
@@ -288,7 +303,15 @@ class DiscordComponents:
             Route("PATCH", f"/channels/{message.channel.id}/messages/{message.id}"), json=data
         )
         msg = ComponentMessage(components=components, state=state, channel=message.channel, data=data)
-        self._update_button_events(msg, timeout, on_timeout)
+
+        auto = self.bot._button_events.get(msg.id, None)
+        if auto is not None:
+            auto['auto'] = auto.get('auto', True) if auto_restart is None else auto_restart
+        else:
+            auto = {'auto': True if auto_restart is None else auto_restart}
+
+        if (auto_restart is not None and auto_restart) or (auto_restart is None and auto['auto']):
+            self._update_button_events(msg, timeout, on_timeout, auto_restart)
 
     def _get_components_json(
         self, components: List[Union[Component, List[Component]]] = None
