@@ -107,7 +107,7 @@ class DiscordComponents:
             await ButtonEvent.disable_buttons(self, event['message'])
         await self.__pop_timeout(message_id)
 
-    def remove_timeout(self, message: Message, run_first: bool = False):
+    async def remove_timeout(self, message: Message, run_first: bool = False):
         if message.id not in self.bot._button_events:
             return
         if run_first:

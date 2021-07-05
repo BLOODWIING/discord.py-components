@@ -120,7 +120,7 @@ class Interaction:
 class ButtonEvent(Interaction):
     async def finish(self, *, auto_disable=False, auto_clear=False, run_timeout=False):
         if hasattr(self.bot, '_button_events') and self.message.id in self.bot._button_events:
-            self.client.remove_timeout(self.message, run_first=run_timeout)
+            await self.client.remove_timeout(self.message, run_first=run_timeout)
 
             if auto_clear:
                 await ButtonEvent.clear_buttons(self.client, self.message)
