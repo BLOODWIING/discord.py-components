@@ -13,7 +13,10 @@ from discord.abc import Messageable
 
 from inspect import iscoroutinefunction
 
-from asyncio import sleep
+from pprint import pprint
+from traceback import print_stack
+
+from asyncio import sleep, Task, CancelledError, InvalidStateError
 from aiohttp import FormData
 from typing import List, Union, Callable, Optional
 from json import dumps
@@ -70,8 +73,10 @@ class DiscordComponents:
             for key, value in InteractionEventType.items():
                 if value == res["d"]["data"]["component_type"]:
                     event = self.bot._button_events.get(int(res['d']['message']['id']), None)
+
                     if event is not None:
                         func = event.get('func', {}).get(res['d']['data']['custom_id'], None)
+
                         if event.get('auto', True):
                             self.__restart_timeout(int(res['d']['message']['id']))
                         if func is not None:
@@ -91,57 +96,121 @@ class DiscordComponents:
         Message.edit = edit_component_msg_prop
         Message.reply = reply_component_msg_prop
 
-    async def __pop_timeout(self, message_id: int):
-        self.bot._button_events.pop(message_id, None)
+    def __make_pop_timeout(self, message_id: int):
+        def __pop_timeout(task: Task = None):
+            if task is None:
+                print('POP NO TASK')
+                return
+            print('POP', task.get_name())
+            print_stack()
+            try:
+                e = task.exception()
+            except CancelledError:
+                print('CANCELLED', task.get_name())
+                pass
+            except InvalidStateError:
+                print('INVALID STATE')
+                if self.bot._button_events.get(message_id, {'timer': None}) == task:
+                    self.bot._button_events.pop(message_id, None)
+                # print('INVALID STATE')
+                pass
+            else:
+                print('ELSE')
+                if self.bot._button_events.get(message_id, {'timer': None}) == task:
+                    self.bot._button_events.pop(message_id, None)
+                if e is not None:
+                    print('ERROR')
+                    # print('\n\n\nOH FUCK')
+                    # print(type(task))
+                    # print(task.__class__.__bases__)
+                    raise e
+                else:
+                    print('NO ERROR?')
+        return __pop_timeout
 
     async def __timeout(self, message_id: int, timeout: Union[float, int]):
         if timeout is None:
             return
+
+        print('BEGIN', timeout)
+
         await sleep(timeout)
+
         event = self.bot._button_events.get(message_id, None)
+
         if event is None:
             return
+
         if 'timeout' in event and event['timeout'] is not None:
+            print('TIMEOUT')
             await run_func(event['timeout'], TimeoutEvent(self, event['message']))
+            print('TIMEOUT_SUCCESS')
         else:
             await ButtonEvent.disable_buttons(self, event['message'])
-        await self.__pop_timeout(message_id)
 
     async def remove_timeout(self, message: Message, run_first: bool = False):
         if message.id not in self.bot._button_events:
             return
+
         if run_first:
             event = self.bot._button_events[message.id]
-            if event['timer'] is not None:
+
+            if event['timer'] is not None and not event['timer'].done():
                 event['timer'].cancel()
+
             if 'timeout' in event and event['timeout'] is not None:
                 await run_func(event['timeout'], TimeoutEvent(self, event['message']))
             else:
                 await ButtonEvent.disable_buttons(self, event['message'])
-            await self.__pop_timeout(message.id)
+
+            self.__make_pop_timeout(message.id)(event['timer'])
+
         else:
-            timer = self.bot._button_events.pop(message.id, {}).get('timer', None)
-            if timer is not None:
+            # print('AAAAAAAAAAAAAA')
+            timer = self.bot._button_events.get(message.id, {}).get('timer', None)
+            if timer is not None and not timer.done():
                 timer.cancel()
+            self.__make_pop_timeout(message.id)(timer)
+            # print('AAAAAAAAAAAAAA')
+            # timer = self.bot._button_events.pop(message.id, {}).get('timer', None)
+            # if timer is not None and not timer.done():
+            #     print('CANCEL BITHC')
+            #     timer.cancel()
+            #     print('CANCEL BITHC YESSS')
 
     def update_timeout(self, message: Message, timeout: Union[float, int]):
         if message.id not in self.bot._button_events:
             return
+
         timer = self.bot._button_events[message.id].get('timer', None)
-        if timer is not None:
+
+        if timer is not None and not timer.done():
             timer.cancel()
+
         timer = self.bot.loop.create_task(self.__timeout(message.id, timeout))
+        timer.add_done_callback(self.__make_pop_timeout(message.id))
+
         self.bot._button_events[message.id]['timer'] = timer
         self.bot._button_events[message.id]['reset'] = timeout
 
     def __restart_timeout(self, message_id: int):
         if message_id not in self.bot._button_events:
             return
+
         timer = self.bot._button_events[message_id].get('timer', None)
-        if timer is not None:
+
+        print('\n\nRESTART')
+        print(self.bot._button_events)
+        print_stack()
+
+        print(timer)
+        if timer is not None and not timer.done():
             timer.cancel()
+
         if 'reset' in self.bot._button_events[message_id] and self.bot._button_events[message_id]['reset'] is not None:
             timer = self.bot.loop.create_task(self.__timeout(message_id, self.bot._button_events[message_id]['reset']))
+            print(' CREATED NEW', timer.get_name())
+            timer.add_done_callback(self.__make_pop_timeout(message_id))
             self.bot._button_events[message_id]['timer'] = timer
 
     def restart_timeout(self, message: Message):
@@ -152,10 +221,17 @@ class DiscordComponents:
             msg: ComponentMessage,
             timeout: Union[float, int],
             on_timeout: Callable,
-            auto_restart: Optional[bool]
+            auto_restart: Optional[bool],
+            events: Optional[dict] = None,
+            new_c: bool = False
     ):
         if hasattr(self.bot, '_button_events'):
-            if msg.components is None or len(sum(msg.components, [])) == 0:
+            if msg.components is None:
+                return
+
+            if len(sum(msg.components, [])) == 0:
+                timer = self.bot._button_events.get(msg.id, {}).get('timer', None)
+                self.__make_pop_timeout(msg.id)(timer)
                 return
 
             if not isinstance(timeout, (float, int, type(None))):
@@ -164,19 +240,30 @@ class DiscordComponents:
             if not isinstance(on_timeout, (Callable, type(None))):
                 raise ValueError('on_timeout must be a function')
 
-            funcs = msg._get_button_events()
+            funcs = msg._get_button_events() if events is None else events
+
+            if not new_c and timeout is None:
+                return
 
             if len(funcs.keys()) > 0:
-                prev = self.bot._button_events.get(msg.id, {}).get('auto', True)
+                prev = self.bot._button_events.get(msg.id, {})
                 self.bot._button_events[msg.id] = {
                     'func': funcs,
-                    'timeout': on_timeout,
+                    'timeout': on_timeout if on_timeout is not None else prev.get('timeout', None),
                     'message': msg,
-                    'auto': auto_restart if auto_restart is not None else prev
+                    'auto': auto_restart if auto_restart is not None else prev.get('auto', True),
+                    'timer': prev.get('timer', None),
+                    'reset': timeout if timeout is not None else prev.get('reset', None)
                 }
                 if timeout is not None:
-                    self.bot._button_events[msg.id]['reset'] = timeout
-                self.restart_timeout(msg)
+                    self.restart_timeout(msg)
+
+            else:
+                timer = self.bot._button_events.get(msg.id, {}).get('timer', None)
+                self.__make_pop_timeout(msg.id)(timer)
+
+                # print()
+                # pprint(self.bot._button_events)
 
     async def send_component_msg(
         self,
@@ -273,7 +360,7 @@ class DiscordComponents:
             )
 
         msg = ComponentMessage(components=components, state=state, channel=channel, data=data)
-        self._update_button_events(msg, timeout, on_timeout, auto_restart)
+        self._update_button_events(msg, timeout, on_timeout, auto_restart, new_c=True)
         if delete_after is not None:
             self.bot.loop.create_task(msg.delete(delay=delete_after))
         return msg
@@ -293,6 +380,9 @@ class DiscordComponents:
     ):
         state = self.bot._get_state()
         data = {**self._get_components_json(components), **options}
+
+        new_c = options.pop('new_c', None)
+        new_c = components is not None if new_c is None else new_c
 
         if content is not None:
             data["content"] = content
@@ -320,8 +410,8 @@ class DiscordComponents:
         else:
             auto = {'auto': True if auto_restart is None else auto_restart}
 
-        if (auto_restart is not None and auto_restart) or (auto_restart is None and auto['auto']):
-            self._update_button_events(msg, timeout, on_timeout, auto_restart)
+        if (auto_restart is not None and auto_restart) or (auto_restart is None and auto['auto']) or components is not None:
+            self._update_button_events(msg, timeout, on_timeout, auto_restart, new_c=new_c)
 
     def _get_components_json(
         self, components: List[Union[Component, List[Component]]] = None

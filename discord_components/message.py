@@ -10,10 +10,14 @@ class ComponentMessage(Message):
         self.components = components
 
     def _get_button_events(self):
-        if not isinstance(self.components, list):
+        return ComponentMessage._get_obj_button_events(self.components)
+
+    @staticmethod
+    def _get_obj_button_events(components):
+        if not isinstance(components, list):
             return {}
         button_events = {}
-        for c in self.components:
+        for c in components:
             if isinstance(c, Iterable):
                 for cc in c:
                     if cc.event is not None:

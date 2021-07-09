@@ -1,9 +1,9 @@
-from discord import User, Client, Embed, AllowedMentions, InvalidArgument, Message
+from discord import User, Client, Embed, AllowedMentions, InvalidArgument, Message, HTTPException
 from discord.ext.commands import Bot
 from discord.http import Route
 
 from aiohttp import FormData
-from typing import List, Union, Iterable
+from typing import List, Union, Iterable, Callable
 from json import dumps
 
 from .button import Button
@@ -57,6 +57,7 @@ class Interaction:
         self.raw_data = raw_data
         self.is_ephemeral = is_ephemeral
         self.responded = False
+        self.embeds = None
 
         self.message = message
         self.channel = message.channel if message else None
@@ -76,6 +77,9 @@ class Interaction:
         tts: bool = False,
         ephemeral: bool = True,
         components: List[Union[Component, List[Component]]] = None,
+        timeout: Union[float, int] = None,
+        auto_restart: bool = None,
+        on_timeout: Callable = None,
         **options,
     ) -> None:
         state = self.bot._get_state()
@@ -98,6 +102,7 @@ class Interaction:
             if len(embeds) > 10:
                 raise InvalidArgument("Embed limit exceeded. (Max: 10)")
             data["embeds"] = embeds
+            self.embeds = embeds
 
         if allowed_mentions:
             if state.allowed_mentions:
@@ -116,6 +121,86 @@ class Interaction:
             json={"type": type, "data": data},
         )
 
+        if components:
+            self.message.components = components
+
+        auto = self.bot._button_events.get(self.message.id, None)
+        if auto is not None:
+            auto['auto'] = auto.get('auto', True) if auto_restart is None else auto_restart
+        else:
+            auto = {'auto': True if auto_restart is None else auto_restart}
+
+        if (auto_restart is not None and auto_restart) or (auto_restart is None and auto['auto']) or components is not None:
+            events = ComponentMessage._get_obj_button_events(components) if components is not None else None
+            self.client._update_button_events(
+                self.message, timeout, on_timeout, auto_restart, events, new_c=components is not None)
+
+    async def edit_response(
+        self,
+        *,
+        content: str = None,
+        embed: Embed = None,
+        embeds: List[Embed] = None,
+        allowed_mentions: AllowedMentions = None,
+        components: List[Union[Component, List[Component]]] = None,
+        timeout: Union[float, int] = None,
+        auto_restart: bool = None,
+        on_timeout: Callable = None,
+        **options,
+    ) -> None:
+        if not self.responded:
+            raise HTTPException('no original message sent')
+
+        state = self.bot._get_state()
+        data = {
+            **self.client._get_components_json(components),
+            **options
+        }
+
+        if content is not None:
+            data["content"] = content
+
+        if embed and embeds:
+            embeds.append(embed)
+        elif embed:
+            embeds = [embed]
+
+        if embeds:
+            embeds = list(map(lambda x: x.to_dict(), embeds))
+            if len(embeds) > 10:
+                raise InvalidArgument("Embed limit exceeded. (Max: 10)")
+            data["embeds"] = embeds
+            self.embeds = embeds
+        elif self.embeds:
+            data["embeds"] = self.embeds
+
+        if allowed_mentions:
+            if state.allowed_mentions:
+                allowed_mentions = state.allowed_mentions.merge(allowed_mentions).to_dict()
+            else:
+                allowed_mentions = allowed_mentions.to_dict()
+
+            data["allowed_mentions"] = allowed_mentions
+
+        await self.bot.http.request(
+            Route("PATCH", f"/webhooks/{self.bot.user.id}/{self.interaction_token}/messages/@original"),
+            json=data,
+        )
+
+        if components:
+            self.message.components = components
+
+        auto = self.bot._button_events.get(self.message.id, None)
+        if auto is not None:
+            auto['auto'] = auto.get('auto', True) if auto_restart is None else auto_restart
+        else:
+            auto = {'auto': True if auto_restart is None else auto_restart}
+
+        if (auto_restart is not None and auto_restart) or (auto_restart is None and auto['auto']) or components is not None:
+            events = ComponentMessage._get_obj_button_events(components) if components is not None else None
+            self.client._update_button_events(
+                self.message, timeout, on_timeout, auto_restart, events, new_c=components is not None)
+
 
 class ButtonEvent(Interaction):
     async def finish(self, *, auto_disable=False, auto_clear=False, run_timeout=False):
@@ -133,15 +218,16 @@ class ButtonEvent(Interaction):
         self.client.restart_timeout(self.message)
 
     @staticmethod
-    async def clear_buttons(client: "DiscordComponents", message: Message):
+    async def clear_buttons(client: "DiscordComponents", message: Message, *, _pop_key=True):
         await client.edit_component_msg(
             message,
             None,
-            components=[]
+            components=[],
+            new_c=_pop_key
         )
 
     @staticmethod
-    async def disable_buttons(client: "DiscordComponents", message: Message):
+    async def disable_buttons(client: "DiscordComponents", message: Message, *, _pop_key=True):
         for c in message.components:
             if isinstance(c, Iterable):
                 for cc in c:
@@ -152,7 +238,8 @@ class ButtonEvent(Interaction):
         await client.edit_component_msg(
             message,
             None,
-            components=message.components
+            components=message.components,
+            new_c=_pop_key
         )
 
 
@@ -162,7 +249,7 @@ class TimeoutEvent:
         self.message = message
 
     async def clear_buttons(self):
-        await ButtonEvent.clear_buttons(self.client, self.message)
+        await ButtonEvent.clear_buttons(self.client, self.message, _pop_key=False)
 
     async def disable_buttons(self):
-        await ButtonEvent.disable_buttons(self.client, self.message)
+        await ButtonEvent.disable_buttons(self.client, self.message, _pop_key=False)
