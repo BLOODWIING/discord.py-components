@@ -1,4 +1,4 @@
-from discord import Message
+from discord import Message, PartialMessage
 from typing import List, Union, Iterable
 
 from .component import Component
@@ -26,3 +26,12 @@ class ComponentMessage(Message):
                 if c.event is not None:
                     button_events[c.id] = c.event
         return button_events
+
+
+class PartialComponentMessage(PartialMessage):
+    def __init__(self, *, components: List[Union[Component, List[Component]]] = [], **kwargs):
+        super().__init__(**kwargs)
+        self.components = components
+
+    def _get_button_events(self):
+        return ComponentMessage._get_obj_button_events(self.components)

@@ -5,6 +5,9 @@ from discord.http import Route
 from aiohttp import FormData
 from typing import List, Union, Iterable, Callable
 from json import dumps
+from uuid import uuid1
+
+import asyncio
 
 from .button import Button
 from .message import ComponentMessage
@@ -46,6 +49,7 @@ class Interaction:
         raw_data: dict,
         message: ComponentMessage = None,
         is_ephemeral: bool = False,
+        id: int = None
     ):
         self.bot = bot
         self.client = client
@@ -65,6 +69,8 @@ class Interaction:
 
         self.interaction_id = raw_data["d"]["id"]
         self.interaction_token = raw_data["d"]["token"]
+        self.response_ephemeral = False
+        self.response_id = None
 
     async def respond(
         self,
@@ -115,25 +121,43 @@ class Interaction:
         if tts is not None:
             data["tts"] = tts
 
+        self.response_id = str(uuid1())
+        if type == InteractionType.ChannelMessageWithSource or type == InteractionType.DeferredChannelMessageWithSource:
+            if components:
+                for c in components:
+                    if isinstance(c, Iterable):
+                        for cc in c:
+                            cc.id = self.response_id + cc.id
+                    else:
+                        c.id = self.response_id + c.id
+
         self.responded = True
         await self.bot.http.request(
             Route("POST", f"/interactions/{self.interaction_id}/{self.interaction_token}/callback"),
             json={"type": type, "data": data},
         )
 
-        if components:
-            self.message.components = components
+        if type == InteractionType.UpdateMessage:
+            if components and self.message:
+                self.message.components = components
 
-        auto = self.bot._button_events.get(self.message.id, None)
-        if auto is not None:
-            auto['auto'] = auto.get('auto', True) if auto_restart is None else auto_restart
-        else:
-            auto = {'auto': True if auto_restart is None else auto_restart}
+            auto = self.bot._button_events.get(str(self.message.id), None)
+            if auto is not None:
+                auto['auto'] = auto.get('auto', True) if auto_restart is None else auto_restart
+            else:
+                auto = {'auto': True if auto_restart is None else auto_restart}
 
-        if (auto_restart is not None and auto_restart) or (auto_restart is None and auto['auto']) or components is not None:
-            events = ComponentMessage._get_obj_button_events(components) if components is not None else None
-            self.client._update_button_events(
-                self.message, timeout, on_timeout, auto_restart, events, new_c=components is not None)
+            if (auto_restart is not None and auto_restart) or (auto_restart is None and auto['auto']) or components is not None:
+                events = ComponentMessage._get_obj_button_events(components) if components is not None else None
+                self.client._update_button_events(
+                    self.message, str(self.message.id), timeout, on_timeout,
+                    auto_restart, events, new_c=components is not None, comps=components)
+
+        elif type == InteractionType.ChannelMessageWithSource or type == InteractionType.DeferredChannelMessageWithSource:
+            self.response_ephemeral = True
+            self.client._update_button_events(None, self.response_id, timeout,
+                                              on_timeout, auto_restart, new_c=True, comps=components)
+
 
     async def edit_response(
         self,
@@ -150,6 +174,14 @@ class Interaction:
     ) -> None:
         if not self.responded:
             raise HTTPException('no original message sent')
+
+        if self.response_ephemeral and components:
+            for c in components:
+                if isinstance(c, Iterable):
+                    for cc in c:
+                        cc.id = self.response_id + cc.id
+                else:
+                    c.id = self.response_id + c.id
 
         state = self.bot._get_state()
         data = {
@@ -187,35 +219,60 @@ class Interaction:
             json=data,
         )
 
-        if components:
-            self.message.components = components
+        if self.response_ephemeral:
+            auto = self.bot._button_events.get(self.response_id, None)
+            if auto is not None:
+                auto['auto'] = auto.get('auto', True) if auto_restart is None else auto_restart
+            else:
+                auto = {'auto': True if auto_restart is None else auto_restart}
 
-        auto = self.bot._button_events.get(self.message.id, None)
-        if auto is not None:
-            auto['auto'] = auto.get('auto', True) if auto_restart is None else auto_restart
+            if (auto_restart is not None and auto_restart) or (auto_restart is None and auto['auto']) or components is not None:
+                events = ComponentMessage._get_obj_button_events(components) if components is not None else None
+                self.client._update_button_events(
+                    None, self.response_id, timeout, on_timeout, auto_restart,
+                    events, new_c=components is not None, comps=components)
         else:
-            auto = {'auto': True if auto_restart is None else auto_restart}
+            if components:
+                self.message.components = components
 
-        if (auto_restart is not None and auto_restart) or (auto_restart is None and auto['auto']) or components is not None:
-            events = ComponentMessage._get_obj_button_events(components) if components is not None else None
-            self.client._update_button_events(
-                self.message, timeout, on_timeout, auto_restart, events, new_c=components is not None)
+            auto = self.bot._button_events.get(str(self.message.id), None)
+            if auto is not None:
+                auto['auto'] = auto.get('auto', True) if auto_restart is None else auto_restart
+            else:
+                auto = {'auto': True if auto_restart is None else auto_restart}
+
+            if (auto_restart is not None and auto_restart) or (auto_restart is None and auto['auto']) or components is not None:
+                events = ComponentMessage._get_obj_button_events(components) if components is not None else None
+                self.client._update_button_events(
+                    self.message, str(self.message.id), timeout, on_timeout, auto_restart, events, new_c=components is not None)
 
 
 class ButtonEvent(Interaction):
     async def finish(self, *, auto_disable=False, auto_clear=False, run_timeout=False):
-        if hasattr(self.bot, '_button_events') and self.message.id in self.bot._button_events:
-            await self.client.remove_timeout(self.message, run_first=run_timeout)
+        if hasattr(self.bot, '_button_events'):
+            if str(self.message.id) in self.bot._button_events:
+                await self.client.remove_timeout(message=self.message, run_first=run_timeout)
 
-            if auto_clear:
-                await ButtonEvent.clear_buttons(self.client, self.message)
+                if auto_clear:
+                    await ButtonEvent.clear_buttons(self.client, self.message)
 
-            elif auto_disable:
-                await ButtonEvent.disable_buttons(self.client, self.message)
+                elif auto_disable:
+                    await ButtonEvent.disable_buttons(self.client, self.message)
+
+            elif self.id in self.bot._button_events:
+                await self.client.remove_timeout(events_id=self.id, run_first=run_timeout)
+
+                if auto_clear:
+                    await self.edit_response(
+                        components=[]
+                    )
+
+                elif auto_disable:
+                    raise ValueError('not supported due to buttons being saved only on the user client')
 
     def update_timeout(self, timeout: float):
         self.bot._button_events[self.message.id]['reset'] = timeout
-        self.client.restart_timeout(self.message)
+        self.client.restart_timeout(message=self.message)
 
     @staticmethod
     async def clear_buttons(client: "DiscordComponents", message: Message, *, _pop_key=True):
